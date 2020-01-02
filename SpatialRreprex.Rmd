@@ -1,0 +1,166 @@
+---
+title: "Spatial R reprex"
+author: "Emma Jones"
+date: "1/2/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse) # the tidyverse is your friend, always load it up
+```
+
+## Rmarkdown
+
+In case you don't use Rmarkdown, you should. This is an example of an Rmarkdown document. It is basically the Jupiter Notebook (python) version of literate programming for R. It's fabulous, change your workflow to use it. You can write in english (or whatever language you want) and insert code in chunks or in line features like... the mean of 2,2,and 4 is `r mean(2+2+4)`. See the html version of the document to see what that snippet does by 'knitting' this document. It's a gamechanger.
+
+## Data
+
+So for doing any sort of analysis in R, you need data. It sounds like you will be combining lots of spreadsheets from MS Excel to get the data you need. Data manipulation is going to be more than half the battle (like 80%), but first you need the data in your R environment. I prefer using the readxl package.
+
+I grabbed this example dataset from our DEQ ProbMon page (https://www.deq.virginia.gov/Programs/Water/WaterQualityInformationTMDLs/WaterQualityMonitoring/ProbabilisticMonitoring/ProbMonDataSources.aspx). It is the data we publish biannually from our wadeable sites encompassing our random site results from 2001-2016. Note there is a ReadMe tab and actual data tab. This chunk below will show you how to bring in the actual data.
+
+```{r readxl example}
+library(readxl) #install this first if you don't already have it
+
+probData <- read_excel('data/Wadeable_ProbMon_2001-2016.xlsx', 
+                  sheet = 'Wadeable_ProbMon_2001-2016_EVJ')
+```
+
+You can look at it and see it's a super wide dataset (much like what you are going to deal with) with individual stations as rows (some are duplicated because they are trend sites, note different sample years) with associated data in subsequent columns.
+
+```{r look at prob data}
+View(probData)
+```
+
+The StationID_Trend column is basically our unique identifier because it helps us keep track of individual station names and the year they are sampled if a station name is repeated.
+
+```{r unique station names}
+length(unique(probData$StationID)) == nrow(probData)
+length(unique(probData$StationID_Trend)) == nrow(probData)
+```
+
+Here is a specific example of what I'm talking about:
+
+```{r trend site example}
+View(filter(probData, StationID %in% '2-LIJ003.06') %>%
+       select(StationID:LatitudeDD))
+```
+
+You are going to have to do a fair bit of work to smash the datasets you get from different groups into a nice 'clean' dataset like we are using here. Good luck!
+
+## Turning data into spatial data
+
+So you have a nice clean dataset, awesome. Now you want to look at it on a map. I highly advise using the sf package because it allows you to use many of the same data manipulation features of the tidyverse without 'dropping' the associated attribute data. Research S3 vs S4 objects if you want to know more, but trust me in that spatial analysis is significantly better in the modern days of sf instead of sp libraries.
+
+It is really simple to turn your data into spatial data.
+
+```{r sf dataset}
+library(sf) # install if you don't have it already
+
+probData_sf <- st_as_sf(probData,
+                        coords = c("LongitudeDD", "LatitudeDD"),  # make spatial layer using these columns
+                        remove = F, # don't remove these lat/lon columns from the dataset (may want to use them later)
+                        crs = 4326) # add coordinate reference system that applies to your input spatial data, for our example we need to use geographic but you can use a projected EPSG or even input the long hand coordinate reference system from e.g. ArcGIS
+```
+
+It really is as simple as that. Now you have a dataset named probData_sf that is an 'sf' object.
+
+Note for interactive mapping you will need to use WGS84 (such that basemaps work properly). WGS84 is the standard for internet mapping.
+
+```{r look at sf object}
+class(probData_sf)
+glimpse(probData_sf)
+```
+So the only real change is that there is an added "list column" called geometry that contains the spatial information. This data gets sent along with (most) of your regular commands. Let's retry the command from above to test this theory.
+
+```{r trend site example sf}
+View(filter(probData_sf, StationID %in% '2-LIJ003.06') %>%
+       select(StationID:LatitudeDD))
+```
+
+Note how 'geometry' is not specified in your dplyr::select() call but it comes along for the ride anyway? That is a really big deal.
+
+There is a ton more you can do with the sf package, but that was just the tiniest of tastes. Feel free to explore all the spatial analyis procedures one can tackle in a very simple manner in R.
+
+
+## Interactive Maps
+
+Leaflet is a very powerful JavaScript library that enables most of the webmapping applications you see on webpages. R has a package (named leaflet) that allows you to harness the power of that JavaScript library in R without having to write code in JavaScript (amazing). Another R package called mapview built on leaflet and enabled even easier interaction with spatial data by wrapping a "basic" interactive map into a single call, essentially simplifying a few lines of code into one. It's great if you want to quickly look at your data, but there is tons of customization you can do with leaflet and mapview to dial in to waht you really want. Research that on your own.
+
+```{r mapview primer}
+library(mapview) # install if you dont have it, and leaflet while you are at it
+library(leafpop) # library for better popup control
+
+mapview(probData_sf)
+```
+
+Note you can click on each station to see the data behind it ( you can customize what you see in said pop up if the amount of data is overwhelming like this example). See the native layers available to you in the top left hand corner, these can be changed inte the mapview() call as well.
+
+Want to add more data to your map? Bring in a spatial file (shapefile from ESRI) and add it to your map like so. Note I added a few more customizations for map.
+
+The polygons I'm adding to the map are DEQ's assessment watersheds at a HUC6 level.  Note that it is also in WGS84 otherwise we will get some errors when trying to map things with different crs in same map. There is no projections on the fly like in ArcGIS in R. R does not allow laziness! 
+
+```{r mapview a little cleaner}
+# Bring in shapefile
+wshdPolys <- st_read('data/AssessmentRegions_VA84_basins.shp') # read in shapefile with sf package
+
+# make another map, color the polygons by the Basin field and the points by their VSCI score
+mapview(wshdPolys, zcol = "Basin", legend = TRUE)
+```
+
+But that took a long time to render (and probably opened in a browser window), so let's use some quick sf functions to simplify the dataset for our purposes.
+
+```{r dissolve some boundaries}
+wshdPolys_basins <- wshdPolys %>%
+  group_by(Basin) %>%
+  summarize()
+
+# now map it
+mapview(wshdPolys_basins, zcol = "Basin", legend = TRUE)
+```
+
+Much faster and only shows what we care about (VA major river basins). Let's add the points to this map and call it a day. Note we are plotting the polygons first and then the points so the polygons don't hide the points on teh initial map rendering. YOu can toggle layers on and off in the layer drop down on top left drop down.
+
+```{r final mapview}
+m <- mapview(wshdPolys_basins, # dataset to map 
+        map.types = c('OpenStreetMap', 'Esri.WorldImagery', 'OpenTopoMap'), # basemaps to use, note there are fewer than previous map because I don't like some of their default basemaps
+        zcol = "Basin", # use basin to color the polygons
+        legend = TRUE, # Force the legend to plot
+        layer.name = 'Virginia Major River Basins' # force a pretty name for layer in case you named the object a dumb name
+        ) + # use + to add a layer
+  mapview(probData_sf,  # dataset
+           map.types = c('OpenStreetMap', 'Esri.WorldImagery', 'OpenTopoMap'), # basemaps to use, repeated here but it's really easy to set up some baseline mapview plotting rules using the mapviewOptions() function and not have to repeat this line of code. Included here for example purposes.
+          zcol='VSCIVCPMI',  # column to color
+          at = seq(0, 100, 30),  # color scheme, here I'm taking our variable that's 0-100 and breaking it into 3 categories to make the map prettier
+          col.regions = c('red', 'yellow', 'green'), # now I'm coloring those zones the colors I want instead of mapview default colors
+          layer.name = 'ProbMon Stations 2001 - 2016', # renaming the dataset on the map to make it pretty
+          popup = popupTable(probData_sf,
+                             zcol = c('StationID', 'Year', 'Order','EcoRegion','VSCIVCPMI'))) # and customizing the popup
+
+m
+```
+
+
+Not terrible for a few lines of code. 
+
+## Exporting map
+
+So the way we built the map into the Rmarkdown document is great if you are building a report and want an interactive map to be embedded into it. If, however, you want to just send the map to someone (and spatial data embedded and it to stay interactive) that is also really easy with mapview/leaflet. For that, all you need to do is use the next line of code.
+
+╦
+```{r mapshot}
+mapshot(m, url = "exampleMap.html")
+```
+
+That map will open in your default browser (chrome and firefox are best, sometimes edge cooperates) with everything you created natively set up. Note how awesome this is for sending people maps without requiring proprietary software (e.g. ArcGIS) just to view the data. The data is relatively small (5MB in this example), so you can even email it.
+
+
+## More info
+
+Have fun exploring all the options available with all these packages. This is barely scratching the surface. Here are some more resources:
+https://r-spatial.github.io/sf/articles/sf1.html
+https://r-spatial.github.io/mapview/articles/articles/mapview_01-basics.html
+https://rstudio.github.io/leaflet/
+https://waterdata.usgs.gov/blog/inlmiscmaps/ look at this one for more water-specific basic web map. It's really neat, and inlmisc::CreateWebMap() can save you a lot of time, but you will need you head around leaflet first, so save this one for later.
